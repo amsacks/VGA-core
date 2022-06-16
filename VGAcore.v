@@ -1,85 +1,91 @@
-`timescale 1ns / 1ps
-//////////////////////////////////////////////////////////////////////////////////
-// Engineer:        Adrian Sacks 
-// Module Name:     VGAcore
-// Description:     Outputs the proper vertical and horizontal synch 
-//                  pulses, as well as when there is video, for the
-//                  follow VGA signal timing specs:
-//                  640 x 480 @ 60 Hz
-//                  25 MHz Pixel Clock(*)
-//                  
-//                  For changing the timing parameters for different specs: 
-//                  http://martin.hinner.info/vga/timing.html
-//
-//
-//                  (*) : For a bare bones VGA driver, it's okay that 
-//                        the Pixel Clock is not exactly 25.175 MHz.
-// Revision 0.01 -  File Created
+module VGAcore_v2
+    #(  // System Frequency and Pixel Frequency
+        parameter sys_F = 100_000_000,
+        parameter pix_F = 25_000_000,
 
-//////////////////////////////////////////////////////////////////////////////////
-
-
-module VGAcore
-    #(  // Horizonal timing 
+        // Horizonal timing 
         parameter hDisp  = 640,
         parameter hFp    = 16,
         parameter hPulse = 96,
         parameter hBp    = 48,
-        
+        parameter hEnd   = 800, 
+
         // Vertical timing 
         parameter vDisp  = 480,
         parameter vFp    = 11,   
         parameter vPulse = 2,
-        parameter vBp    = 31
+        parameter vBp    = 31,
+        parameter vEnd   = 524
     )
-     (  input          pixClk,
-        input          rst,
-        output  [$clog2(hDisp+hFp+hPulse+hBp) - 1:0] horiz_counter,
-        output  [$clog2(vDisp+vFp+vPulse+vBp) - 1:0] vert_counter,
-        output  reg    video,
-        output  reg    horiz_sync_pulse,
-        output  reg    vert_sync_pulse
-     );
-     
-     localparam hEND        = hDisp + hFp + hPulse + hBp; 
-     localparam hSyncStart  = hDisp + hFp;
-     localparam hSyncEnd    = hDisp + hFp + hPulse;
-     
-     localparam vEND        = vDisp + vFp + vPulse + vBp;
-     localparam vSyncStart  = vDisp + vFp;
-     localparam vSyncEnd    = vDisp + vFp + vPulse;
-     
-     reg [$clog2(hEND) - 1:0]  hc;
-     reg [$clog2(vEND) - 1:0]  vc;
-     
-     always@(posedge pixClk or posedge rst)
+    (
+        input   clk,
+        input   rst, 
+        output  pix_tick,
+        output  hsync,
+        output  vsync,
+        output  video,
+        output  [$clog2(hEnd)-1:0] pix_x,
+        output  [$clog2(vEnd)-1:0] pix_y 
+    );
+
+    localparam CLKS_PER_TICK = sys_F/pix_F; 
+    
+    reg  [$clog2(CLKS_PER_TICK) - 1:0] pixel_reg;
+    reg  [$clog2(hEnd)          - 1:0] pix_x_reg, pix_x_nxt;
+    reg  [$clog2(vEnd)          - 1:0] pix_y_reg, pix_y_nxt;
+    reg                                hsync_reg;
+    reg                                vsync_reg;
+    
+    wire [$clog2(CLKS_PER_TICK) - 1:0] pixel_nxt;  
+    wire                               hsync_nxt;
+    wire                               vsync_nxt; 
+    
+    always @(posedge clk or posedge rst)
         begin
-            if(rst) begin
-                hc <= 0;
-                vc <= 0;
-                horiz_sync_pulse <= 0;
-                vert_sync_pulse <= 0;
-                video <= 0;
-            end
-            else begin
-               
-                if(hc == hEND)
-                    hc <= 0; 
-                else hc <= hc + 1'b1;
-                
-                if((vc == vEND) && (hc == hEND))
-                   vc <= 0; 
-                else if(hc == hEND)
-                    vc <= vc + 1'b1; 
-                
-                horiz_sync_pulse <= ~((hc >= hSyncStart) && (hc <= hSyncEnd));
-                vert_sync_pulse  <= ~((vc >= vSyncStart) && (vc <= vSyncEnd));
-                video            <=  ((hc < hDisp) && (vc < vDisp));
-            end
+            if(rst)
+                begin
+                    pixel_reg <= 0; 
+                    pix_x_reg <= 0;
+                    pix_y_reg <= 0; 
+                    hsync_reg <= 0;
+                    vsync_reg <= 0; 
+                end
+            else 
+                begin
+                    pixel_reg <= pixel_nxt; 
+                    pix_x_reg <= pix_x_nxt;
+                    pix_y_reg <= pix_y_nxt; 
+                    hsync_reg <= hsync_nxt;
+                    vsync_reg <= vsync_nxt; 
+                end
+             
         end 
-        
-     // Continuously assign temp registers to outputs of module    
-     assign horiz_counter       = hc;
-     assign vert_counter        = vc;
-     
+    
+    // Next-state Logic
+    assign pixel_nxt = (pixel_reg == CLKS_PER_TICK - 1) ? 0 : pixel_reg + 1'b1;
+    assign hsync_nxt = ( (pix_x_reg >= hDisp + hFp) &&
+                            (pix_x_reg <= hDisp + hFp + hPulse + hBp - 1)) ? 0 : 1;
+    assign vsync_nxt = ( (pix_y_reg >= vDisp + vFp) && 
+                            (pix_y_reg <= vDisp + vFp + vPulse + vBp - 1)) ? 0 : 1; 
+    
+    always @(*)
+        begin
+            pix_x_nxt = pix_x_reg;
+            pix_y_nxt = pix_y_reg; 
+            if(pix_tick)
+                if(pix_x_reg == hEnd - 1) pix_x_nxt = 0;
+                else                      pix_x_nxt = pix_x_reg + 1'b1;
+            if(pix_tick && (pix_x_reg == hEnd - 1))
+                if(pix_y_reg == vEnd - 1) pix_y_nxt = 0;
+                else                      pix_y_nxt = pix_y_reg + 1'b1;
+        end 
+    
+    // Output Logic
+    assign pix_tick = (pixel_reg == CLKS_PER_TICK - 1) ? 1 : 0; 
+    assign video    = (pix_x_reg < hDisp && pix_y_reg < vDisp);
+    assign hsync    = hsync_reg;
+    assign vsync    = vsync_reg;
+    assign pix_x    = pix_x_reg;
+    assign pix_y    = pix_y_reg;
+    
 endmodule
